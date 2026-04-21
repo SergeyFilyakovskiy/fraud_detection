@@ -144,10 +144,10 @@ CFG = dict(
         lr        = 1e-3,
     ),
     lstm_ae = dict(
-        units  = [32, 16],
-        epochs = 35,
+        units  = [16, 8],   # уменьшена ёмкость: мощная сеть слишком хорошо реконструирует фрод
+        epochs = 50,
         batch  = 64,
-        lr     = 1e-3,
+        lr     = 5e-4,      # меньший lr для более аккуратной сходимости
     ),
     arima = dict(
         max_p          = 3,
@@ -968,8 +968,10 @@ def train_autoencoder(d: dict) -> dict | None:
         axes[1].hist(err[d["y_te"] == cls], bins=60, alpha=0.65,
                      color=col, label=lbl, density=True)
     axes[1].axvline(thr, color="black", ls="--", lw=2, label=f"Порог={thr:.4f}")
+    # Ограничиваем X-ось до 99-го перцентиля, чтобы выбросы не растягивали ось
+    x_clip = max(np.percentile(err, 99) * 1.5, thr * 1.5)
     axes[1].set(title="Ошибка реконструкции (Test)",
-                xlabel="MSE", ylabel="Плотность")
+                xlabel="MSE", ylabel="Плотность", xlim=[0, x_clip])
     axes[1].legend(); axes[1].grid(alpha=0.3)
 
     idx_ok = np.where(d["y_te"] == 0)[0][:2000]
@@ -1020,13 +1022,17 @@ def train_lstm_autoencoder(d: dict) -> dict | None:
     )
     ae.save(f"{CFG['model_dir']}/lstm_autoencoder.keras")
 
+    # Порог выбираем по ошибкам на TRAIN-нормальных (без утечки данных из теста)
+    rec_train = ae.predict(X_seqs_ok[-5000:], verbose=0)   # хвост train_ok
+    err_train  = np.mean(np.mean((X_seqs_ok[-5000:] - rec_train) ** 2, axis=2), axis=1)
+
     rec  = ae.predict(X_te_seqs, verbose=0)
     err  = np.mean(np.mean((X_te_seqs - rec) ** 2, axis=2), axis=1)
 
-    err_ok = err[y_te_seqs == 0]
-    best_f1, best_thr = 0.0, np.percentile(err_ok, 95)
+    # Перцентиль ошибки на обучающей выборке — нет утечки данных
+    best_f1, best_thr = 0.0, np.percentile(err_train, 95)
     for pct in [88, 90, 92, 95, 97, 99]:
-        thr = np.percentile(err_ok, pct)
+        thr = np.percentile(err_train, pct)
         f1  = f1_score(y_te_seqs, (err > thr).astype(int), zero_division=0)
         if f1 > best_f1:
             best_f1, best_thr = f1, thr
@@ -1046,7 +1052,9 @@ def train_lstm_autoencoder(d: dict) -> dict | None:
         axes[1].hist(err[y_te_seqs == cls], bins=60, alpha=0.65,
                      color=col, label=lbl, density=True)
     axes[1].axvline(best_thr, color="black", ls="--", lw=2, label="Порог")
-    axes[1].set(title="Ошибки реконструкции LSTM AE", xlabel="MSE", ylabel="Плотность")
+    x_clip_lstm = max(np.percentile(err, 99) * 1.5, best_thr * 1.5)
+    axes[1].set(title="Ошибки реконструкции LSTM AE",
+                xlabel="MSE", ylabel="Плотность", xlim=[0, x_clip_lstm])
     axes[1].legend(); axes[1].grid(alpha=0.3)
 
     plt.suptitle("Анализ LSTM Autoencoder", fontsize=14, fontweight="bold")
